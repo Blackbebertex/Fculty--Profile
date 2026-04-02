@@ -5,6 +5,8 @@ import os
 from playwright.async_api import async_playwright
 import logging
 from datetime import datetime
+from pymongo import MongoClient, UpdateOne
+import json 
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +35,8 @@ class ScraperEngine:
             "logs": []
         }
         self.results = []
+        self.mongo_uri = os.environ.get("MONGO_URI", "mongodb://localhost:27017/faculty_dashboard")
+        self.db_name = "faculty_dashboard"
 
     def log(self, message):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -54,6 +58,7 @@ class ScraperEngine:
 
     async def scrape_google_scholar(self, page, faculty_name, url):
         papers = []
+        metrics = {"citations": 0, "hIndex": 0, "i10Index": 0}
         success = await self.retry_goto(page, url)
         if not success:
             return papers
@@ -90,7 +95,25 @@ class ScraperEngine:
                 })
             except Exception as e:
                 self.log(f"Error parsing Google Scholar item: {e}")
-        return papers
+        
+        # Extract Metrics (Citations, H-index, i10-index) from Sidebar
+        try:
+            metric_rows = await page.query_selector_all("#gsc_rsb_st tr")
+            for row in metric_rows:
+                cells = await row.query_selector_all(".gsc_rsb_std")
+                if len(cells) >= 1:
+                    label = await row.query_selector("a, .gsc_rsb_f")
+                    label_text = await label.inner_text() if label else ""
+                    val = await cells[0].inner_text()
+                    val = int(val) if val.isdigit() else 0
+
+                    if "Citations" in label_text: metrics["citations"] = val
+                    elif "h-index" in label_text: metrics["hIndex"] = val
+                    elif "i10-index" in label_text: metrics["i10Index"] = val
+        except Exception as e:
+            self.log(f"Error parsing Google Scholar metrics: {e}")
+
+        return papers, metrics
 
     async def scrape_generic(self, page, faculty_name, profile_type, url):
         # Fallback for Scopus/WoS if specific selectors fail or are complex
@@ -129,7 +152,7 @@ class ScraperEngine:
                 })
             except Exception as e:
                 pass
-        return papers
+        return papers, {} # Generic scraper doesn't get metrics yet
 
     async def run_scraper(self):
         if self.is_running:
@@ -171,9 +194,12 @@ class ScraperEngine:
                         self.log(f"Visiting {profile_type}...")
                         
                         if "scholar.google" in str(link):
-                            faculty_papers = await self.scrape_google_scholar(page, faculty, link)
+                            faculty_papers, metrics = await self.scrape_google_scholar(page, faculty, link)
+                            # Update global results and faculty-specific metrics
+                            for paper in faculty_papers:
+                                paper["Metrics"] = metrics # Attach metrics to first paper for easy saving
                         else:
-                            faculty_papers = await self.scrape_generic(page, faculty, profile_type, link)
+                            faculty_papers, _ = await self.scrape_generic(page, faculty, profile_type, link)
 
                         self.results.extend(faculty_papers)
                         self.progress["papers_scraped"] = len(self.results)
@@ -204,6 +230,117 @@ class ScraperEngine:
             self.progress["status"] = "Error"
         finally:
             self.is_running = False
+            # Sync to MongoDB after each run
+            if self.results:
+                self.save_to_mongodb()
+
+    def initialize_faculty_from_csv(self):
+        """Initializes the Faculty collection in MongoDB from the provided CSV file."""
+        try:
+            df = pd.read_csv(self.csv_path)
+            client = MongoClient(self.mongo_uri)
+            db = client[self.db_name]
+            faculty_collection = db["faculties"] 
+
+            ops = []
+            for _, row in df.iterrows():
+                name = row["Faculty Name"]
+                profile_links = {
+                    "googleScholar": row.get("Google Scholar", ""),
+                    "scopus": row.get("Scopus Profile", ""),
+                    "wos": row.get("WoS / ORCID / Publons", "")
+                }
+                
+                # Use "upsert" to avoid duplicate faculty entries
+                ops.append(UpdateOne(
+                    {"name": name},
+                    {"$setOnInsert": {
+                        "name": name,
+                        "area": "Computer Science & IT", # Default, can be refined 
+                        "profileLinks": profile_links,
+                        "papers": 0,
+                        "hIndex": 0,
+                        "citations": 0
+                    }},
+                    upsert=True
+                ))
+
+            if ops:
+                faculty_collection.bulk_write(ops)
+                self.log(f"Synced {len(ops)} faculty profiles to MongoDB.")
+            client.close()
+        except Exception as e:
+            self.log(f"Error initializing faculty: {e}")
+
+    def save_to_mongodb(self):
+        """Saves scraped publications to MongoDB and updates faculty stats."""
+        if not self.results:
+            return
+
+        try:
+            client = MongoClient(self.mongo_uri)
+            db = client[self.db_name]
+            pub_collection = db["publications"]
+            fac_collection = db["faculties"]
+
+            pub_ops = []
+            faculty_stats = {} # track counts for bulk update
+
+            for paper in self.results:
+                faculty_name = paper["Faculty Name"]
+                title = paper["Title"]
+                
+                # Prepare publication upsert
+                pub_ops.append(UpdateOne(
+                    {"title": title, "faculty": faculty_name},
+                    {"$set": {
+                        "title": title,
+                        "faculty": faculty_name,
+                        "authors": paper.get("Authors", ""),
+                        "journal": paper.get("Journal", "General Publication"),
+                        "year": int(paper["Year"]) if str(paper["Year"]).isdigit() else 2024,
+                        "link": paper.get("Paper Link", "#"),
+                        "source": paper.get("Source", "Sourced"),
+                    }},
+                    upsert=True
+                ))
+
+                # Aggregate paper counts per faculty
+                faculty_stats[faculty_name] = faculty_stats.get(faculty_name, 0) + 1
+
+            # Update Publications
+            if pub_ops:
+                pub_collection.bulk_write(pub_ops)
+                self.log(f"Successfully upserted {len(pub_ops)} papers to MongoDB.")
+
+            # Update Faculty document stats (paper counts, citations, hIndex, i10Index)
+            fac_ops = []
+            for name, count in faculty_stats.items():
+                # Find metrics from first paper of this faculty
+                faculty_metrics = {"citations": 0, "hIndex": 0, "i10Index": 0}
+                for p in self.results:
+                    if p["Faculty Name"] == name and "Metrics" in p:
+                        faculty_metrics = p["Metrics"]
+                        break
+
+                fac_ops.append(UpdateOne(
+                    {"name": name},
+                    {"$set": {
+                        "papers": count,
+                        "citations": faculty_metrics["citations"],
+                        "hIndex": faculty_metrics["hIndex"],
+                        "i10Index": faculty_metrics["i10Index"]
+                    }},
+                    upsert=True
+                ))
+            
+            if fac_ops:
+                fac_collection.bulk_write(fac_ops)
+                self.log(f"Updated metadata for {len(fac_ops)} faculty members.")
+
+            client.close()
+        except Exception as e:
+            self.log(f"FAILED to save to MongoDB: {e}")
 
     def stop(self):
         self.is_running = False

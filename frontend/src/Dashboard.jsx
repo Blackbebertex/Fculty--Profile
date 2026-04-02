@@ -112,6 +112,7 @@ export default function Dashboard({
                   <th>Papers</th>
                   <th>Citations</th>
                   <th>H-Index</th>
+                  <th>i10-Index</th>
                 </tr>
               </thead>
               <tbody>
@@ -122,6 +123,7 @@ export default function Dashboard({
                     <td style={{ fontFamily: 'monospace' }}>{r.papers}</td>
                     <td style={{ fontFamily: 'monospace', color: '#93c5fd' }}>{r.citations}</td>
                     <td style={{ fontFamily: 'monospace', fontWeight: '900' }}>{r.hIndex}</td>
+                    <td style={{ fontFamily: 'monospace', color: '#818cf8' }}>{r.i10Index || 0}</td>
                   </tr>
                 ))}
               </tbody>
@@ -189,8 +191,8 @@ export default function Dashboard({
                 <p style={{ color: '#60a5fa', fontWeight: 700 }}>{f.citations}</p>
               </div>
               <div>
-                <p style={{ fontSize: '0.6rem', fontWeight: 900, color: 'var(--text-dim)', textTransform: 'uppercase' }}>h-index</p>
-                <p style={{ color: '#60a5fa', fontWeight: 700 }}>{f.hIndex}</p>
+                <p style={{ fontSize: '0.6rem', fontWeight: 900, color: 'var(--text-dim)', textTransform: 'uppercase' }}>i10-idx</p>
+                <p style={{ color: '#818cf8', fontWeight: 700 }}>{f.i10Index || 0}</p>
               </div>
             </div>
             <button 

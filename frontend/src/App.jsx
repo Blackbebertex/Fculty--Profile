@@ -10,6 +10,7 @@ import Dashboard from './Dashboard';
 import FacultyList from './FacultyList';
 import PublicationsList from './PublicationsList';
 import ScraperShell from './ScraperShell';
+import FacultyProfile from './FacultyProfile';
 
 // Use relative path — Vite proxy routes /api → http://localhost:8001
 const API_BASE = "/api";
@@ -69,7 +70,7 @@ export default function App() {
   
   const handleViewPapers = (facultyName) => {
     setSelectedFaculty(facultyName);
-    setActiveTab('publications');
+    setActiveTab('faculty-profile');
   };
 
   const handleNavClick = (tabId) => {
@@ -348,6 +349,13 @@ export default function App() {
           {activeTab === 'faculties' && <FacultyList faculties={faculties} onViewPapers={handleViewPapers} />}
           {activeTab === 'publications' && <PublicationsList publications={feed} initialSearch={selectedFaculty} />}
           {activeTab === 'scraper' && <ScraperShell />}
+          {activeTab === 'faculty-profile' && (
+            <FacultyProfile 
+              faculty={faculties.find(f => f.name === selectedFaculty)} 
+              publications={feed} 
+              onBack={() => setActiveTab('faculties')} 
+            />
+          )}
         </div>
       </main>
 

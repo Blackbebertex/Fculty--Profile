@@ -24,6 +24,16 @@ OUTPUT_EXCEL = os.path.join(BASE_DIR, "..", "faculty_research_dashboard.xlsx")
 # Initialize scraper engine
 scraper = ScraperEngine(CSV_FILE, OUTPUT_EXCEL)
 
+@app.on_event("startup")
+async def startup_event():
+    # Sync faculty data from CSV to MongoDB on start
+    scraper.initialize_faculty_from_csv()
+
+@app.post("/api/init")
+async def init_faculty():
+    scraper.initialize_faculty_from_csv()
+    return {"status": "success", "message": "Faculty profiles initialized from CSV."}
+
 @app.post("/api/start")
 async def start_scraping(background_tasks: BackgroundTasks):
     if scraper.is_running:
